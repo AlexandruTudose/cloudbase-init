@@ -13,6 +13,10 @@
 #    under the License.
 
 import unittest
+try:
+    import unittest.mock as mock
+except ImportError:
+    import mock
 
 from cloudbaseinit.metadata.services import base
 
@@ -27,6 +31,50 @@ class FakeService(base.BaseMetadataService):
         return self._get_data()
 
 
+class FakeAdaptor(base.BaseNetworkAdapter):
+
+    def __init__(self, service):
+        super(FakeAdaptor, self).__init__(service=service)
+        self._links = {
+            mock.sentinel.link1: {
+                base.NAME: mock.sentinel.name,
+                base.MAC_ADDRESS: mock.sentinel.mac,
+            },
+            mock.sentinel.link2: {
+                base.NAME: mock.sentinel.name,
+                base.MAC_ADDRESS: mock.sentinel.mac,
+            },
+        }
+        self._networks = {
+            mock.sentinel.net1: {
+                base.NAME: mock.sentinel.net1,
+                base.IP_ADDRESS: mock.sentinel.address4,
+                base.VERSION: 4,
+            },
+            mock.sentinel.net2: {
+                base.NAME: mock.sentinel.net2,
+                base.IP_ADDRESS: mock.sentinel.address6,
+                base.VERSION: 6,
+            }
+        }
+
+    def get_link(self, name):
+        """Return all the information related to the link."""
+        return self._links[name]
+
+    def get_links(self):
+        """Return a list with the names of the available links."""
+        return self._links.keys()
+
+    def get_network(self, link, name):
+        """Return all the information related to the network."""
+        return self._networks[name]
+
+    def get_networks(self, link):
+        """Returns all the network names bound by the required link."""
+        return self._networks.keys()
+
+
 class TestBase(unittest.TestCase):
 
     def setUp(self):
@@ -35,3 +83,59 @@ class TestBase(unittest.TestCase):
     def test_get_decoded_user_data(self):
         userdata = self._service.get_decoded_user_data()
         self.assertEqual(b"of course it works", userdata)
+
+    def test_get_network_details(self):
+        # TODO(stefan-caraiman): Add this test.
+        pass
+
+
+class TestAdaptor(unittest.TestCase):
+
+    def setUp(self):
+        self._adaptor = FakeAdaptor(mock.sentinel.service)
+
+    def test_digest_interface(self):
+        # TODO(stefan-caraiman): Add this test.
+        pass
+
+    def test_get_field(self):
+        # TODO(stefan-caraiman): Add this test.
+        pass
+
+    def test_get_fields(self):
+        # TODO(stefan-caraiman): Add this test.
+        pass
+
+    def test_get_link(self):
+        # TODO(stefan-caraiman): Add this test.
+        pass
+
+    def test_get_links(self):
+        # TODO(stefan-caraiman): Add this test.
+        pass
+
+    def test_get_network(self):
+        # TODO(stefan-caraiman): Add this test.
+        pass
+
+    def test_get_networks(self):
+        # TODO(stefan-caraiman): Add this test.
+        pass
+
+
+class TestNetworkConfig(unittest.TestCase):
+
+    def setUp(self):
+        self._config = base.NetworkConfig(mock.sentinel.network_adapter)
+
+    def test_get_networks(self):
+        # TODO(stefan-caraiman): Add this test.
+        pass
+
+    def test_digest(self):
+        # TODO(stefan-caraiman): Add this test.
+        pass
+
+    def test_get_network_details(self):
+        # TODO(stefan-caraiman): Add this test.
+        pass

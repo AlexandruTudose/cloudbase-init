@@ -12,160 +12,105 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-
-import re
-
 from oslo_log import log as oslo_logging
 
 from cloudbaseinit import exception
-from cloudbaseinit.metadata.services import base as service_base
+from cloudbaseinit.metadata.services import basenetworkservice as service_base
 from cloudbaseinit.osutils import factory as osutils_factory
 from cloudbaseinit.plugins.common import base as plugin_base
-from cloudbaseinit.utils import network
 
 
 LOG = oslo_logging.getLogger(__name__)
 
-# Mandatory network details are marked with True. And
-# if the key is a tuple, then at least one field must exists.
-NET_REQUIRE = {
-    ("name", "mac"): True,
-    ("address", "address6"): True,
-    ("netmask", "netmask6"): True,
-    "broadcast": False,    # currently not used
-    ("gateway", "gateway6"): False,
-    "dnsnameservers": False
-}
-
-
-def _name2idx(name):
-    """Get the position of a network interface by its name."""
-    match = re.search(r"eth(\d+)", name, re.I)
-    if not match:
-        raise exception.CloudbaseInitException(
-            "invalid NetworkDetails name {!r}"
-            .format(name)
-        )
-    return int(match.group(1))
-
-
-def _preprocess_nics(network_details, network_adapters):
-    """Check NICs and fill missing data if possible."""
-    # Initial checks.
-    if not network_adapters:
-        raise exception.CloudbaseInitException(
-            "no network adapters available")
-    # Sort VM adapters by name (assuming that those
-    # from the context are in correct order).
-    # Do this for a better matching by order
-    # if hardware address is missing.
-    network_adapters = sorted(network_adapters, key=lambda arg: arg[0])
-    refined_network_details = []    # store here processed interfaces
-    # Check and update every NetworkDetails object.
-    total = len(network_adapters)
-    for nic in network_details:
-        if not isinstance(nic, service_base.NetworkDetails):
-            raise exception.CloudbaseInitException(
-                "invalid NetworkDetails object {!r}"
-                .format(type(nic))
-            )
-        # Check requirements.
-        final_status = True
-        for fields, status in NET_REQUIRE.items():
-            if not status:
-                continue    # skip 'not required' entries
-            if not isinstance(fields, tuple):
-                fields = (fields,)
-            final_status = any([getattr(nic, field) for field in fields])
-            if not final_status:
-                break
-        address, netmask = nic.address, nic.netmask
-        if final_status:
-            # Additional check for info version.
-            if not (address and netmask):
-                final_status = nic.address6 and nic.netmask6
-                if final_status:
-                    address = address or network.address6_to_4_truncate(
-                        nic.address6)
-                    netmask = netmask or network.netmask6_to_4_truncate(
-                        nic.netmask6)
-        if not final_status:
-            LOG.error("Incomplete NetworkDetails object %s", nic)
-            continue
-        # Complete hardware address if missing by selecting
-        # the corresponding MAC in terms of naming, then ordering.
-        if not nic.mac:
-            # By name...
-            macs = [adapter[1] for adapter in network_adapters
-                    if adapter[0] == nic.name]
-            mac = macs[0] if macs else None
-            # ...or by order.
-            idx = _name2idx(nic.name)
-            if not mac and idx < total:
-                mac = network_adapters[idx][1]
-            nic = service_base.NetworkDetails(
-                nic.name,
-                mac,
-                address,
-                nic.address6,
-                netmask,
-                nic.netmask6,
-                nic.broadcast,
-                nic.gateway,
-                nic.gateway6,
-                nic.dnsnameservers
-            )
-        refined_network_details.append(nic)
-    return refined_network_details
-
 
 class NetworkConfigPlugin(plugin_base.BasePlugin):
 
+    """Static networking plugin.
+
+    Statically configures each network adapter for which corresponding
+    details are found into metadata.
+    """
+
+    def __init__(self):
+        super(NetworkConfigPlugin, self).__init__()
+        self._network_details = None
+        self._osutils = osutils_factory.get_os_utils()
+        self._adapters = [adapter[1]
+                          for adapter in self._osutils.get_network_adapters()]
+
+    def _set_static_network_config_v6(self, link, network):
+        """Set IPv6 info for a network card."""
+
+        # TODO(alexcoman): Update the manner of configuring the
+        #                  IPV6 networks.
+        self._osutils.set_static_network_config_v6(
+            mac_address=link.mac_address,
+            address6=network.ip_address,
+            netmask6=network.netmask,
+            gateway6=network.gateway,
+        )
+        return False
+
+    def _set_static_network_config_v4(self, link, network):
+        """Set IPv4 info for a network card."""
+        return self._osutils.set_static_network_config(
+            mac_address=link.mac_address,
+            address=network.ip_address,
+            netmask=network.netmask,
+            broadcast=network.broadcast,
+            gateway=network.gateway,
+            dnsnameservers=network.dns_nameservers,
+        )
+
+    def _configure_phy(self, link):
+        """Configure physical NICs."""
+        response = False
+        for network_id in self._network_details.get_networks(link.id):
+            network = self._network_details.get_network(network_id)
+            LOG.debug("Configuring network %(id)r.", {"id": network.id})
+            if network.version == service_base.IPV4:
+                response |= self._set_static_network_config_v4(link, network)
+            else:
+                response |= self._set_static_network_config_v6(link, network)
+        return response
+
+    def _configure_interface(self, link):
+        """Configure different types of interfaces.
+
+        :rtype: bool
+        """
+        LOG.debug("Configuring link %(name)r: %(mac)s",
+                  {"name": link.name, "mac": link.mac_address})
+        if link.type == service_base.PHY:
+            return self._configure_phy(link)
+
+        raise service_base.NetworkDetailsError("The %r interface type is not"
+                                               " supported.", link.type)
+
     def execute(self, service, shared_data):
-        osutils = osutils_factory.get_os_utils()
-        network_details = service.get_network_details()
-        if not network_details:
+        self._network_details = service.get_network_details()
+        if not self._network_details:
+            LOG.debug("Network information is not available.")
             return plugin_base.PLUGIN_EXECUTION_DONE, False
 
-        # Check and save NICs by MAC.
-        network_adapters = osutils.get_network_adapters()
-        network_details = _preprocess_nics(network_details,
-                                           network_adapters)
-        macnics = {}
-        for nic in network_details:
-            # Assuming that the MAC address is unique.
-            macnics[nic.mac] = nic
+        if not isinstance(self._network_details, service_base.NetworkDetails):
+            raise exception.CloudbaseInitException(
+                "Invalid NetworkDetails object {!r} provided."
+                .format(type(self._network_details)))
 
-        # Try configuring all the available adapters.
-        adapter_macs = [pair[1] for pair in network_adapters]
         reboot_required = False
         configured = False
-        for mac in adapter_macs:
-            nic = macnics.pop(mac, None)
-            if not nic:
-                LOG.warn("Missing details for adapter %s", mac)
-                continue
-            LOG.info("Configuring network adapter %s", mac)
-            reboot = osutils.set_static_network_config(
-                mac,
-                nic.address,
-                nic.netmask,
-                nic.broadcast,
-                nic.gateway,
-                nic.dnsnameservers
-            )
-            reboot_required = reboot or reboot_required
-            # Set v6 info too if available.
-            if nic.address6 and nic.netmask6:
-                osutils.set_static_network_config_v6(
-                    mac,
-                    nic.address6,
-                    nic.netmask6,
-                    nic.gateway6
-                )
-            configured = True
-        for mac in macnics:
-            LOG.warn("Details not used for adapter %s", mac)
+        for link_id in self._network_details.get_links():
+            link = self._network_details.get_link(link_id)
+            try:
+                reboot_required |= self._configure_interface(link)
+            except service_base.NetworkDetailsError as exc:
+                LOG.exception(exc)
+                LOG.error("Failed to configure the interface %r: %s",
+                          link.mac_address)
+            else:
+                configured = True
+
         if not configured:
             LOG.error("No adapters were configured")
 
