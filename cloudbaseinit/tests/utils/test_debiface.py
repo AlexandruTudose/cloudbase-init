@@ -15,7 +15,6 @@
 
 import unittest
 
-from cloudbaseinit.metadata.services import base as service_base
 from cloudbaseinit.tests.metadata import fake_json_response
 from cloudbaseinit.tests import testutils
 from cloudbaseinit.utils import debiface
@@ -31,7 +30,7 @@ class TestInterfacesParser(unittest.TestCase):
     def _test_parse_nics(self, no_nics=False):
         with testutils.LogSnatcher('cloudbaseinit.utils.'
                                    'debiface') as snatcher:
-            nics = debiface.parse(self.data)
+            nics = [nic for nic in debiface.parse(self.data)]
 
         if no_nics:
             expected_logging = 'Invalid Debian config to parse:'
@@ -39,30 +38,30 @@ class TestInterfacesParser(unittest.TestCase):
             self.assertFalse(nics)
             return
         # check what we've got
-        nic0 = service_base.NetworkDetails(
-            fake_json_response.NAME0,
-            fake_json_response.MAC0.upper(),
-            fake_json_response.ADDRESS0,
-            fake_json_response.ADDRESS60,
-            fake_json_response.NETMASK0,
-            fake_json_response.NETMASK60,
-            fake_json_response.BROADCAST0,
-            fake_json_response.GATEWAY0,
-            fake_json_response.GATEWAY60,
-            fake_json_response.DNSNS0.split()
-        )
-        nic1 = service_base.NetworkDetails(
-            fake_json_response.NAME1,
-            None,
-            fake_json_response.ADDRESS1,
-            fake_json_response.ADDRESS61,
-            fake_json_response.NETMASK1,
-            fake_json_response.NETMASK61,
-            fake_json_response.BROADCAST1,
-            fake_json_response.GATEWAY1,
-            fake_json_response.GATEWAY61,
-            None
-        )
+        nic0 = {
+            debiface.NAME: fake_json_response.NAME0,
+            debiface.MAC: fake_json_response.MAC0.upper(),
+            debiface.ADDRESS: fake_json_response.ADDRESS0,
+            debiface.ADDRESS6: fake_json_response.ADDRESS60,
+            debiface.NETMASK: fake_json_response.NETMASK0,
+            debiface.NETMASK6: fake_json_response.NETMASK60,
+            debiface.BROADCAST: fake_json_response.BROADCAST0,
+            debiface.GATEWAY: fake_json_response.GATEWAY0,
+            debiface.GATEWAY6: fake_json_response.GATEWAY60,
+            debiface.DNSNS: fake_json_response.DNSNS0.split(),
+        }
+        nic1 = {
+            debiface.NAME: fake_json_response.NAME1,
+            debiface.MAC: None,
+            debiface.ADDRESS: fake_json_response.ADDRESS1,
+            debiface.ADDRESS6: fake_json_response.ADDRESS61,
+            debiface.NETMASK: fake_json_response.NETMASK1,
+            debiface.NETMASK6: fake_json_response.NETMASK61,
+            debiface.BROADCAST: fake_json_response.BROADCAST1,
+            debiface.GATEWAY: fake_json_response.GATEWAY1,
+            debiface.GATEWAY6: fake_json_response.GATEWAY61,
+            debiface.DNSNS: None,
+        }
         self.assertEqual([nic0, nic1], nics)
 
     def test_nothing_to_parse(self):

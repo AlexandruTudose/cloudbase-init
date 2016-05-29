@@ -17,13 +17,12 @@
 
 import os
 import re
-import socket
-import struct
 
 from oslo_log import log as oslo_logging
 import six
 
 from cloudbaseinit.metadata.services import base
+from cloudbaseinit.metadata.services import basenetworkservice as service_base
 from cloudbaseinit.osutils import factory as osutils_factory
 from cloudbaseinit.utils import encoding
 
@@ -47,7 +46,106 @@ GATEWAY = ["ETH{iid}_GATEWAY"]
 DNSNS = ["ETH{iid}_DNS"]
 
 
-class OpenNebulaService(base.BaseMetadataService):
+class _NetworkDetailsBuilder(service_base.NetworkDetailsBuilder):
+
+    """Open Nebula network details builders."""
+
+    def __init__(self, service):
+        super(_NetworkDetailsBuilder, self).__init__(service)
+        self._links = {}
+        self._networks = {}
+
+    @staticmethod
+    def _calculate_netmask(address, gateway):
+        """Try to determine a default netmask.
+
+        It is a simple, frequent and dummy prediction
+        based on the provided IP and gateway addresses.
+        """
+        address_chunks = address.split(".")
+        gateway_chunks = gateway.split(".")
+        netmask_chunks = []
+        for achunk, gchunk in six.moves.zip(
+                address_chunks, gateway_chunks):
+            if achunk == gchunk:
+                nchunk = "255"
+            else:
+                nchunk = "0"
+            netmask_chunks.append(nchunk)
+        return ".".join(netmask_chunks)
+
+    def _get_cache_data(self, names, iid=None, decode=True):
+        """Get meta data with caching and decoding support."""
+        names = names[:]
+        if iid is not None:
+            for ind, value in enumerate(names):
+                names[ind] = value.format(iid=iid)
+
+        return self._service._get_cache_data(names, decode=decode)
+
+    def _digest_network(self, link, name):
+        """Try to find/predict and compute network configuration.
+
+        :rtype: bool
+        :raise: NotExistingMetadataException
+        """
+        address = self._get_cache_data(ADDRESS, iid=name),
+        gateway = self._get_cache_data(GATEWAY, iid=name)
+        dnsns = self._get_cache_data(DNSNS, iid=name).split(" ")
+        try:
+            netmask = self._get_cache_data(NETMASK, iid=name)
+        except base.NotExistingMetadataException:
+            if not gateway:
+                LOG.debug("Incomplete NIC details for %s",
+                          link[service_base.NAME])
+                return False
+            netmask = self._calculate_netmask(address, gateway)
+
+        raw_network = {
+            service_base.NAME: name,
+            service_base.IP_ADDRESS: address,
+            service_base.GATEWAY: gateway,
+            service_base.NETMASK: netmask,
+            service_base.DNS: dnsns,
+            service_base.ASSIGNED_TO: link[service_base.ID],
+        }
+        network = self._get_fields(self._network.values(), raw_network)
+        if network:
+            self._networks[network[service_base.ID]] = network
+            return True
+
+        return False
+
+    def _digest(self):
+        """Digest the received network information."""
+        iid = 0
+        while True:
+            name = IF_FORMAT.format(iid=iid)
+            LOG.debug("Discover network information for %r", name)
+            try:
+                mac_address = self._get_cache_data([MAC[0].format(iid=iid)])
+            except base.NotExistingMetadataException:
+                LOG.debug("No network information available for %r", name)
+                break
+
+            raw_link = {
+                service_base.NAME: name,
+                service_base.MAC_ADDRESS: mac_address.upper(),
+            }
+            link = self._get_fields(self._link.values(), raw_link)
+            if link:
+                if self._digest_network(link, iid):
+                    self._links[link[service_base.ID]] = link
+            else:
+                # Note(alexcoman): The current raw_link does not contain
+                #                  all the required fields.
+                LOG.warning("%r does not contains all the required fields.",
+                            raw_link)
+
+            iid += 1
+
+
+class OpenNebulaService(service_base.BaseNetworkMetadataService):
 
     """Service handling ONE.
 
@@ -61,13 +159,10 @@ class OpenNebulaService(base.BaseMetadataService):
         self._raw_content = None
         self._dict_content = {}
 
-    def _nic_count(self):
-        """Return the number of available interfaces."""
-        mac = MAC[0]
-        iid = 0
-        while self._dict_content.get(mac.format(iid=iid)):
-            iid += 1
-        return iid
+    @property
+    def content(self):
+        """Expose the information from the config file."""
+        return self._dict_content
 
     @staticmethod
     def _parse_shell_variables(content):
@@ -95,34 +190,6 @@ class OpenNebulaService(base.BaseMetadataService):
                           int(match.group("int_value")))
         return pairs
 
-    @staticmethod
-    def _calculate_netmask(address, gateway):
-        """Try to determine a default netmask.
-
-        It is a simple, frequent and dummy prediction
-        based on the provided IP and gateway addresses.
-        """
-        address_chunks = address.split(".")
-        gateway_chunks = gateway.split(".")
-        netmask_chunks = []
-        for achunk, gchunk in six.moves.zip(
-                address_chunks, gateway_chunks):
-            if achunk == gchunk:
-                nchunk = "255"
-            else:
-                nchunk = "0"
-            netmask_chunks.append(nchunk)
-        return ".".join(netmask_chunks)
-
-    @staticmethod
-    def _compute_broadcast(address, netmask):
-        address_ulong, = struct.unpack("!L", socket.inet_aton(address))
-        netmask_ulong, = struct.unpack("!L", socket.inet_aton(netmask))
-        bitmask = 0xFFFFFFFF
-        broadcast_ulong = address_ulong | ~netmask_ulong & bitmask
-        broadcast = socket.inet_ntoa(struct.pack("!L", broadcast_ulong))
-        return broadcast
-
     def _parse_context(self):
         # Get the content if it's not already retrieved and parse it.
         if not self._raw_content:
@@ -146,24 +213,19 @@ class OpenNebulaService(base.BaseMetadataService):
             raise base.NotExistingMetadataException(msg)
         return self._dict_content[name]
 
-    def _get_cache_data(self, names, iid=None, decode=False):
-        # Solves caching issues when working with
-        # multiple names (lists not hashable).
-        # This happens because the caching function used
-        # to store already computed results inside a dictionary
-        # and the keys were strings (and must be anything that
-        # is hashable under a dictionary, that's why the exception
-        # is thrown).
-        names = names[:]
-        if iid is not None:
-            for ind, value in enumerate(names):
-                names[ind] = value.format(iid=iid)
+    def _get_cache_data(self, names, decode=False):
+        """Get the cached data collected from the metadata service.
+
+        Solves caching issues when working with multiple names
+        (lists not hashable).
+        """
         for name in names:
             try:
                 return super(OpenNebulaService, self)._get_cache_data(
                     name, decode=decode)
             except base.NotExistingMetadataException:
                 pass
+
         msg = "None of {} metadata was found".format(", ".join(names))
         LOG.debug(msg)
         raise base.NotExistingMetadataException(msg)
@@ -201,52 +263,11 @@ class OpenNebulaService(base.BaseMetadataService):
     def get_public_keys(self):
         return self._get_cache_data(PUBLIC_KEY, decode=True).splitlines()
 
-    def get_network_details(self):
-        """Return a list of NetworkDetails objects.
+    def _get_network_details_builder(self):
+        """Get the required `NetworkDetailsBuilder` object.
 
-        With each object from that list, the corresponding
-        NIC (by mac) can be statically configured.
-        If no such object is present, then is believed that
-        this is handled by DHCP (user didn't provide sufficient data).
+        The `NetworkDetailsBuilder` is used in order to create the
+        `NetworkDetails` object using the network related information
+        exposed by the current metadata provider.
         """
-        network_details = []
-        ncount = self._nic_count()
-        # for every interface
-        for iid in range(ncount):
-            try:
-                # get existing values
-                mac = self._get_cache_data(MAC, iid=iid, decode=True).upper()
-                address = self._get_cache_data(ADDRESS, iid=iid, decode=True)
-                # try to find/predict and compute the rest
-                try:
-                    gateway = self._get_cache_data(GATEWAY, iid=iid,
-                                                   decode=True)
-                except base.NotExistingMetadataException:
-                    gateway = None
-                try:
-                    netmask = self._get_cache_data(NETMASK, iid=iid,
-                                                   decode=True)
-                except base.NotExistingMetadataException:
-                    if not gateway:
-                        raise
-                    netmask = self._calculate_netmask(address, gateway)
-                broadcast = self._compute_broadcast(address, netmask)
-                # gather them as namedtuple objects
-                details = base.NetworkDetails(
-                    name=IF_FORMAT.format(iid=iid),
-                    mac=mac,
-                    address=address,
-                    address6=None,
-                    netmask=netmask,
-                    netmask6=None,
-                    broadcast=broadcast,
-                    gateway=gateway,
-                    gateway6=None,
-                    dnsnameservers=self._get_cache_data(
-                        DNSNS, iid=iid, decode=True).split(" ")
-                )
-            except base.NotExistingMetadataException:
-                LOG.debug("Incomplete NIC details")
-            else:
-                network_details.append(details)
-        return network_details
+        return _NetworkDetailsBuilder(self)

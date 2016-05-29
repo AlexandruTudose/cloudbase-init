@@ -104,25 +104,32 @@ OPEN = mock.mock_open(read_data=CONTEXT.encode())
 
 
 def _get_nic_details(iid=0):
-        details = base.NetworkDetails(
-            opennebulaservice.IF_FORMAT.format(iid=iid),
-            MAC,
-            ADDRESS,
-            None,
-            NETMASK,
-            None,
-            BROADCAST,
-            GATEWAY,
-            None,
-            DNSNS.split(" ")
-        )
-        return details
+    details = base.NetworkDetails(
+        opennebulaservice.IF_FORMAT.format(iid=iid),
+        MAC,
+        ADDRESS,
+        None,
+        NETMASK,
+        None,
+        BROADCAST,
+        GATEWAY,
+        None,
+        DNSNS.split(" ")
+    )
+    return details
 
 
 class _TestOpenNebulaService(unittest.TestCase):
 
     def setUp(self):
         self._service = opennebulaservice.OpenNebulaService()
+
+    def load_context(self, context=CONTEXT):
+        self._service._raw_content = context.encode()
+        vardict = self._service._parse_shell_variables(
+            self._service._raw_content
+        )
+        self._service._dict_content = vardict
 
 
 @mock.patch("six.moves.builtins.open", new=OPEN)
@@ -172,24 +179,6 @@ class TestOpenNebulaService(_TestOpenNebulaService):
                 (True, False),
                 (False, True)):
             self._test_parse_shell_variables(crlf=crlf, comment=comment)
-
-    def test_calculate_netmask(self):
-        address, gateway, _netmask = (
-            "192.168.0.10",
-            "192.168.1.1",
-            "255.255.0.0"
-        )
-        netmask = self._service._calculate_netmask(address, gateway)
-        self.assertEqual(_netmask, netmask)
-
-    def test_compute_broadcast(self):
-        address, netmask, _broadcast = (
-            "192.168.0.10",
-            "255.255.0.0",
-            "192.168.255.255"
-        )
-        broadcast = self._service._compute_broadcast(address, netmask)
-        self.assertEqual(_broadcast, broadcast)
 
     @mock.patch("cloudbaseinit.metadata.services"
                 ".opennebulaservice.os.path")
@@ -270,13 +259,6 @@ class TestLoadedOpenNebulaService(_TestOpenNebulaService):
         super(TestLoadedOpenNebulaService, self).setUp()
         self.load_context()
 
-    def load_context(self, context=CONTEXT):
-        self._service._raw_content = context.encode()
-        vardict = self._service._parse_shell_variables(
-            self._service._raw_content
-        )
-        self._service._dict_content = vardict
-
     def test_get_cache_data(self):
         names = ["smt"]
         with self.assertRaises(base.NotExistingMetadataException):
@@ -334,3 +316,21 @@ class TestLoadedOpenNebulaService(_TestOpenNebulaService):
             network_details,
             self._service.get_network_details()
         )
+
+
+class TestOpenNebulaNetworkAdapter(_TestOpenNebulaService):
+
+    def setUp(self):
+        super(TestOpenNebulaNetworkAdapter, self).setUp()
+        self.load_context()
+        self._adapter = opennebulaservice.OpenNebulaNetworkAdapter(
+            self._service)
+
+    def test_calculate_netmask(self):
+        address, gateway, _netmask = (
+            "192.168.0.10",
+            "192.168.1.1",
+            "255.255.0.0"
+        )
+        netmask = self._adapter._calculate_netmask(address, gateway)
+        self.assertEqual(_netmask, netmask)
