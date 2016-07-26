@@ -14,14 +14,16 @@
 
 import posixpath
 
+import json
 from oslo_config import cfg
 from oslo_log import log as oslo_logging
 from six.moves.urllib import error
 from six.moves.urllib import request
 
 from cloudbaseinit.metadata.services import base
+from cloudbaseinit.metadata.services import basenetworkservice as service_base
 from cloudbaseinit.metadata.services import baseopenstackservice
-from cloudbaseinit.utils import network
+from cloudbaseinit.utils import network as network_utils
 
 opts = [
     cfg.StrOpt('metadata_base_url', default='http://169.254.169.254/',
@@ -36,8 +38,85 @@ CONF.register_opts(opts)
 LOG = oslo_logging.getLogger(__name__)
 
 
+class _NetworkDetailsBuilder(service_base.NetworkDetailsBuilder):
+
+    """OpenStack HTTP Service network details builder."""
+
+    _ASSIGNED_TO = "link"
+    _MAC_ADDRESS = "ethernet_mac_address"
+    _NAME = "id"
+    _VERSION = "type"
+    _LINKS = "links"
+    _NETWORKS = "networks"
+    _ROUTES = "routes"
+    _IPV4 = "ipv4"
+
+    def __init__(self, service, network_data):
+        super(_NetworkDetailsBuilder, self).__init__(service)
+        self._network_data = network_data
+        self._invalid_links = []
+
+        self._link.update({
+            service_base.NAME: self._Field(
+                name=service_base.NAME, alias=self._NAME, required=True),
+            service_base.MAC_ADDRESS: self._Field(
+                name=service_base.MAC_ADDRESS, alias=self._MAC_ADDRESS,
+                required=True, on_error=self._on_mac_not_found),
+        })
+        self._network.update({
+            service_base.VERSION: self._Field(
+                name=service_base.VERSION, alias=self._VERSION,
+                default=4, required=True),
+            service_base.ASSIGNED_TO: self._Field(
+                name=service_base.ASSIGNED_TO, alias=self._ASSIGNED_TO,
+                required=True),
+        })
+
+    def _digest_raw_networks(self):
+        """Digest the information related to networks."""
+        for raw_network in self._network_data.get(self._NETWORKS):
+            network = self._get_fields(self._network.values(), raw_network)
+            if not network:
+                LOG.warning("The network %r does not contains all the "
+                            "required fields.", raw_network)
+                continue
+
+            self._invalid_links.pop(network[service_base.ASSIGNED_TO], None)
+            for raw_route in raw_network.get(self._ROUTES, []):
+                raw_route[service_base.ASSIGNED_TO] = network[service_base.ID]
+                route = self._get_fields(self._route.values(), raw_route)
+                if route:
+                    self._routes[route[service_base.ID]] = route
+                else:
+                    LOG.warning("The route %r does not contains all the "
+                                "required fields.", raw_route)
+
+    def _digest(self):
+        """Digest the received network information."""
+        for raw_link in self._network_data.get(self._LINKS, []):
+            link = self._get_fields(self._link.values(), raw_link)
+            if link:
+                if link[service_base.VERSION] == self._IPV4:
+                    link[service_base.VERSION] = service_base.IPV4
+                else:
+                    link[service_base.VERSION] = service_base.IPV6
+                self._links[link[service_base.ID]] = link
+            else:
+                LOG.warning("The link %r does not contains all the required "
+                            "fields.", raw_link)
+
+        self._invalid_links = self._links.keys()
+        self._digest_raw_networks()
+        while self._invalid_links:
+            invalid_link = self._invalid_links.pop()
+            LOG.debug("The link %r does not contains any network.")
+            self._links.pop(invalid_link)
+
+
 class HttpService(baseopenstackservice.BaseOpenStackService):
+
     _POST_PASSWORD_MD_VER = '2013-04-04'
+    _NETWORK_DATA_JSON = "openstack/latest/metadata/network_data.json"
 
     def __init__(self):
         super(HttpService, self).__init__()
@@ -46,7 +125,7 @@ class HttpService(baseopenstackservice.BaseOpenStackService):
     def load(self):
         super(HttpService, self).load()
         if CONF.add_metadata_private_ip_route:
-            network.check_metadata_ip_route(CONF.metadata_base_url)
+            network_utils.check_metadata_ip_route(CONF.metadata_base_url)
 
         try:
             self._get_meta_data()
@@ -106,3 +185,28 @@ class HttpService(baseopenstackservice.BaseOpenStackService):
                 return False
             else:
                 raise
+
+    def _get_network_details_builder(self):
+        """Get the required `NetworkDetailsBuilder` object.
+
+        The `NetworkDetailsBuilder` is used in order to create the
+        `NetworkDetails` object using the network related information
+        exposed by the current metadata provider.
+        """
+        if not self._network_details_builder:
+            network_data = None
+            try:
+                network_data = self._get_data(self._NETWORK_DATA_JSON)
+                network_data = json.loads(network_data)
+            except base.NotExistingMetadataException:
+                LOG.debug("JSON network metadata not found.")
+            except ValueError as exc:
+                LOG.error("Failed to load json data: %r" % exc)
+            else:
+                self._network_details_builder = _NetworkDetailsBuilder(
+                    service=self, network_data=network_data)
+
+            if not network_data:
+                super(HttpService, self)._get_network_details_builder()
+
+        return self._network_details_builder

@@ -44,6 +44,8 @@ VIF = "vif"
 ASSIGNED_TO = "assigned_to"
 BOND_LINKS = "bond_links"
 BOND_MODE = "bond_mode"
+BOND_MIIMON = "bond_miimon"
+BOND_HASH_POLICY = "bond_xmit_hash_policy"
 BROADCAST = "broadcast"
 DNS = "dns_nameservers"
 GATEWAY = "gateway"
@@ -52,9 +54,13 @@ IP_ADDRESS = "ip_address"
 NAME = "name"
 MAC_ADDRESS = "mac_address"
 MTU = "mtu"
+NETWORK = "network"
 NETMASK = "netmask"
+NEUTRON_NETWORK_ID = "neutron_network_id"
+NEUTRON_PORT_ID = "neutron_port_id"
 TYPE = "type"
 VERSION = "version"
+VIF_ID = "vif_id"
 VLAN_ID = "vlan_id"
 VLAN_LINK = "vlan_link"
 
@@ -74,10 +80,11 @@ class NetworkDetails(object):
         should know about the entries of these kind of objects.
     """
 
-    def __init__(self, raw_links, raw_networks, raw_references):
+    def __init__(self, raw_links, raw_networks, routes, raw_references):
         self._assigned_to = raw_links
         self._links = raw_networks
         self._networks = raw_references
+        self._routes = routes
 
     def get_link(self, link_id):
         """Return all the available information related to the received link.
@@ -117,6 +124,24 @@ class NetworkDetails(object):
         """
         return self._assigned_to.get(link_id)
 
+    def get_route(self, route_id):
+        """Return all the information related to the received route.
+
+        :rtype: collection.namedtuple
+
+        .. note ::
+            The link namedtuple contains the following fields: `id`,
+            `network`, `netmask`, `gateway`, `assigned_to`.
+        """
+        return self._routes.get(route_id)
+
+    def get_routes(self, network_id):
+        """Returns all the route ids assigned to the required network.
+
+        :rtype: list
+        """
+        return self._assigned_to.get(network_id)
+
 
 @six.add_metaclass(abc.ABCMeta)
 class NetworkDetailsBuilder(object):
@@ -129,12 +154,17 @@ class NetworkDetailsBuilder(object):
     """
 
     _Link = collections.namedtuple("Link", [ID, NAME, TYPE, MAC_ADDRESS, MTU,
-                                            BOND_LINKS, BOND_MODE, VLAN_ID,
+                                            NEUTRON_PORT_ID, BOND_LINKS,
+                                            BOND_MODE, BOND_MIIMON,
+                                            BOND_HASH_POLICY, VIF_ID, VLAN_ID,
                                             VLAN_LINK])
 
     _Network = collections.namedtuple("Network", [ID, IP_ADDRESS, VERSION,
-                                                  NETMASK, GATEWAY, BROADCAST,
-                                                  DNS, ASSIGNED_TO])
+                                                  NETMASK, NEUTRON_NETWORK_ID,
+                                                  GATEWAY, BROADCAST, DNS,
+                                                  ASSIGNED_TO])
+    _Route = collections.namedtuple("Route", [ID, NETWORK, NETMASK, GATEWAY,
+                                              ASSIGNED_TO])
 
     class _Field(collections.namedtuple("Field", ["name", "alias", "default",
                                                   "required", "on_error"])):
@@ -168,6 +198,7 @@ class NetworkDetailsBuilder(object):
         self._service = service
         self._networks = {}
         self._links = {}
+        self._routes = {}
         osutils = osutils_factory.get_os_utils()
         self._network_adapters = osutils.get_network_adapters()
 
@@ -178,8 +209,14 @@ class NetworkDetailsBuilder(object):
                                      on_error=self._on_mac_not_found),
             TYPE: self._Field(name=TYPE, default=PHY, required=False),
             MTU: self._Field(name=MTU, required=False),
+            NEUTRON_PORT_ID: self._Field(name=NEUTRON_PORT_ID,
+                                         required=False),
             BOND_LINKS: self._Field(name=BOND_LINKS, required=False),
             BOND_MODE: self._Field(name=BOND_MODE, required=False),
+            BOND_MIIMON: self._Field(name=BOND_MIIMON, required=False),
+            BOND_HASH_POLICY: self._Field(name=BOND_HASH_POLICY,
+                                          required=False),
+            VIF_ID: self._Field(name=VIF_ID, required=False),
             VLAN_ID: self._Field(name=VLAN_ID, required=False),
             VLAN_LINK: self._Field(name=VLAN_LINK, required=False),
         }
@@ -192,6 +229,15 @@ class NetworkDetailsBuilder(object):
             BROADCAST: self._Field(name=BROADCAST, required=False),
             DNS: self._Field(name=DNS, default=[], required=False),
             ASSIGNED_TO: self._Field(name=ASSIGNED_TO, required=False),
+            NEUTRON_NETWORK_ID: self._Field(name=NEUTRON_NETWORK_ID,
+                                            required=False),
+        }
+        self._route = {
+            ID: self._Field(name=ID, default=lambda: str(uuid.uuid1())),
+            NETWORK: self._Field(name=NETWORK, required=True),
+            NETMASK: self._Field(name=NETMASK, required=True),
+            GATEWAY: self._Field(name=GATEWAY, required=True),
+            ASSIGNED_TO: self._Field(name=ASSIGNED_TO, required=True),
         }
 
     @staticmethod
@@ -313,6 +359,24 @@ class NetworkDetailsBuilder(object):
                 assigned_to.append(network.id)
         return networks, references
 
+    def _digest_routes(self, references):
+        """Process raw data regarding the routes."""
+        routes = {}
+        for raw_route in self._routes:
+            try:
+                route = self._Route(**raw_route)
+            except TypeError as exc:
+                LOG.debug("Failed to process raw route %(route)r: "
+                          "%(exc)s", {"route": raw_route, "exc": exc})
+                raise NetworkDetailsError("Invalid raw route %r provied." %
+                                          raw_route)
+            else:
+                routes[route.id] = route
+                assigned_to = references.setdefault(route.assigned_to, [])
+                assigned_to.append(route.id)
+
+        return routes
+
     @abc.abstractmethod
     def _digest(self):
         """Digest the received network information."""
@@ -325,9 +389,10 @@ class NetworkDetailsBuilder(object):
 
         links = self._digest_links()
         networks, references = self._digest_networks()
+        routes = self._digest_routes(references)
 
         return NetworkDetails(raw_links=links, raw_networks=networks,
-                              raw_references=references)
+                              routes=routes, raw_references=references)
 
 
 @six.add_metaclass(abc.ABCMeta)
