@@ -1,0 +1,114 @@
+{
+"links": [
+    {
+        "id": "interface2",
+        "type": "vif",
+        "ethernet_mac_address": "a0:36:9f:2c:e8:70",
+        "vif_id": "E1C90E9F-EAFC-4E2D-8EC9-58B91CEBB53D",
+        "mtu": 1500
+    },
+    {
+        "id": "interface0",
+        "type": "phy",
+        "ethernet_mac_address": "a0:36:9f:2c:e8:80",
+        "mtu": 9000
+    },
+    {
+        "id": "interface1",
+        "type": "phy",
+        "ethernet_mac_address": "a0:36:9f:2c:e8:81",
+        "mtu": 9000
+    },
+    { 
+        "id": "bond0",
+        "type": "bond",
+        "bond_links": [
+            "interface0",
+            "interface1"
+        ],
+        "ethernet_mac_address": "a0:36:9f:2c:e8:82",
+        "bond_mode": "802.1ad",
+        "bond_xmit_hash_policy": "layer3+4",
+        "bond_miimon": 100
+
+    },
+    {
+        "id": "vlan0",
+        "type": "vlan",
+        "vlan_link": "bond0",
+        "vlan_id": 101,
+        "vlan_mac_address": "a0:36:9f:2c:e8:80",
+        "neutron_port_id": "E1C90E9F-EAFC-4E2D-8EC9-58B91CEBB53F"
+    },
+],
+"networks": [
+    {
+        "id": "private-ipv4",
+        "type": "ipv4",
+        "link": "interface0",
+        "ip_address": "10.184.0.244",
+        "netmask": "255.255.240.0",
+        "routes": [
+            {
+                "network": "10.0.0.0",
+                "netmask": "255.0.0.0",
+                "gateway": "11.0.0.1"
+            },
+            {
+                "network": "0.0.0.0",
+                "netmask": "0.0.0.0",
+                "gateway": "23.253.157.1"
+            }
+        ],
+        "neutron_network_id": "DA5BB487-5193-4A65-A3DF-4A0055A8C0D7"
+    },
+    {
+        "id": "private-ipv4",
+        "type": "ipv6",
+        "link": "interface0",
+        "ip_address": "2001:cdba::3257:9652/24",
+        "routes": [
+            {
+                "network": "::",
+                "netmask": "::",
+                "gateway": "fd00::1"
+            },
+            {
+                "network": "::",
+                "netmask": "ffff:ffff:ffff::",
+                "gateway": "fd00::1:1"
+            },
+        ],
+        "neutron_network_id": "DA5BB487-5193-4A65-A3DF-4A0055A8C0D8"
+    },
+    {
+        "id": "publicnet-ipv4",
+        "type": "ipv4",
+        "link": "vlan0",
+        "ip_address": "23.253.157.244",
+        "netmask": "255.255.255.0",
+        "dns_nameservers": [
+            "69.20.0.164",
+            "69.20.0.196"
+        ],
+        "routes": [
+            {
+                "network": "0.0.0.0",
+                "netmask": "0.0.0.0",
+                "gateway": "23.253.157.1"
+            }
+        ],
+        "neutron_network_id": "62611D6F-66CB-4270-8B1F-503EF0DD4736"
+    }
+],
+"services": [
+    {
+        "type": "dns",
+        "address": "8.8.8.8"
+    },
+    {
+        "type": "dns",
+        "address": "8.8.4.4"
+    }
+]
+}
