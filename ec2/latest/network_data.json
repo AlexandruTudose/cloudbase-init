@@ -78,7 +78,7 @@
             "vif_id": "E1C90E9F-EAFC-4E2D-8EC9-58B91CEBB53D"
         }, 
         {
-            "ethernet_mac_address": "FA-16-3E-71-0F-88", 
+            "ethernet_mac_address": "FA-16-3E-73-2E-9E", 
             "type": "phy", 
             "id": "interface0", 
             "mtu": 9000
@@ -107,7 +107,7 @@
             "vlan_id": 101, 
             "type": "vlan", 
             "id": "vlan0", 
-            "vlan_mac_address": "FA-16-3E-71-0F-88"
+            "vlan_mac_address": "FA-16-3E-73-2E-9E"
         }
     ]
 }
